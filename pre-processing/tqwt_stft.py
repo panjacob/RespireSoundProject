@@ -97,7 +97,8 @@ def stft_and_save(sig, fs, dir, win_len, file):
     plt.gca().yaxis.set_major_locator(plt.NullLocator())
     plt.subplots_adjust(top=1, bottom=0, left=0, right=1, hspace=0, wspace=0)
     plt.margins(0, 0)
-    plt.savefig(dir + file[:-3] + 'png', cmap='Greys_r')
+    plt.set_cmap(cmap='Greys_r')
+    plt.savefig(dir + file[:-3] + 'png')
     plt.close()
 
 def save_pic(file):

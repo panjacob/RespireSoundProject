@@ -22,7 +22,7 @@ def pack(dir_stft):
         feature_wh_list.append(np.array(I_stft))
         I_stft = Image.open(dir_stft + '../res/' + file).convert('L')
         feature_res_list.append(np.array(I_stft))
-        txt_dir = '../data/ICBHI/'
+        txt_dir = '../data/official/train/'
 
         num = int(file.split('.')[0][22:])
         txt_name = file[:22] + '.txt'
