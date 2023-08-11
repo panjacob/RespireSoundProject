@@ -15,6 +15,7 @@ import torchvision.transforms as transforms
 from sklearn.metrics import confusion_matrix as sk_confusion_matrix
 from tensorboardX import SummaryWriter
 from torch.autograd import Variable
+from tqdm import tqdm
 import time
 import csv
 
@@ -41,9 +42,9 @@ parser.add_argument('--optimizer', type=str, default='SGD')
 parser.add_argument('--debug', action='store_true')
 parser.add_argument('--gpu', type=str, default='0')
 parser.add_argument('--input', '-i',
-                    default="../pack/official/tqwt1_4_train.p", type=str,
+                    default="./pack/official/tqwt1_4_train.p", type=str,
                     help='path to directory with input data archives')
-parser.add_argument('--test', default="../pack/official/tqwt1_4_test.p",
+parser.add_argument('--test', default="./pack/official/tqwt1_4_test.p",
                     type=str, help='path to directory with test data archives')
 args = parser.parse_args()
 #######################################################################################
@@ -141,7 +142,7 @@ class AugmentedConv(nn.Module):
         v = self.split_heads_2d(v, Nh)
 
         dkh = dk // Nh
-        q *= dkh ** -0.5
+        q = q * (dkh ** -0.5)
         flat_q = torch.reshape(q, (N, Nh, dk // Nh, H * W))
         flat_k = torch.reshape(k, (N, Nh, dk // Nh, H * W))
         flat_v = torch.reshape(v, (N, Nh, dv // Nh, H * W))
@@ -338,18 +339,18 @@ class myDataset(data.Dataset):
         sample_stfth = normalize(sample_stfth)
         sample_stftr = normalize(sample_stftr)
 
-        output_stft = torch.FloatTensor([sample_stft])
+        output_stft = torch.FloatTensor(np.array([sample_stft]))
         crop_s = transforms.Resize([args.size, args.size])
         img_s = transforms.ToPILImage()(output_stft)
         croped_img = crop_s(img_s)
         output_stft = transforms.ToTensor()(croped_img)
 
-        output_stfth = torch.FloatTensor([sample_stfth])
+        output_stfth = torch.FloatTensor(np.array([sample_stfth]))
         img_s = transforms.ToPILImage()(output_stfth)
         croped_img = crop_s(img_s)
         output_stfth = transforms.ToTensor()(croped_img)
 
-        output_stftr = torch.FloatTensor([sample_stftr])
+        output_stftr = torch.FloatTensor(np.array([sample_stftr]))
         img_s = transforms.ToPILImage()(output_stftr)
         croped_img = crop_s(img_s)
         output_stftr = transforms.ToTensor()(croped_img)
@@ -363,14 +364,14 @@ class myDataset(data.Dataset):
 
 def get_mnist_loaders(batch_size=128, test_batch_size = 500, workers = 4, perc=1.0):
     # ori, ck, wh, res, label
-    stft, labels, stfth, stftr = joblib.load(open(args.input, mode='rb'))
-    stft, labels, stfth, stftr = np.array(stft), one_hot(np.array(labels), 4), np.array(stfth), np.array(stftr)
-    stft = np.concatenate((stft[:, np.newaxis], stfth[:, np.newaxis], stftr[:, np.newaxis]), 1)
+    ori, stftl, stfth, stftr, labels = joblib.load(open(args.input, mode='rb'))
+    stftl, stfth, stftr, labels = np.array(stftl), np.array(stfth), np.array(stftr),  one_hot(np.array(labels), 4)
+    stft = np.concatenate((stftl[:, np.newaxis], stfth[:, np.newaxis], stftr[:, np.newaxis]), 1)
 
-    stft_test, labels_test, stft_testh, stft_testr = joblib.load(open(args.test, mode='rb'))
-    stft_test, labels_test, stft_testh, stft_testr = np.array(stft_test), one_hot(np.array(labels_test), 4), np.array(
-        stft_testh), np.array(stft_testr)
-    stft_test = np.concatenate((stft_test[:, np.newaxis], stft_testh[:, np.newaxis], stft_testr[:, np.newaxis]), 1)
+    ori_tst, stftl_test, stfth_test, stftr_test, labels_test = joblib.load(open(args.test, mode='rb'))
+    stftl_test, stfth_test, stftr_test, labels_test  = np.array(stftl_test), np.array(
+        stfth_test), np.array(stftr_test), one_hot(np.array(labels_test), 4),
+    stft_test = np.concatenate((stftl_test[:, np.newaxis], stfth_test[:, np.newaxis], stftr_test[:, np.newaxis]), 1)
 
     train_loader = DataLoader(
         myDataset(stft, labels), batch_size=batch_size,
@@ -599,7 +600,7 @@ if __name__ == '__main__':
         csv_head = ['epoch', 'train_loss', 'train_acc','train_se', 'train_sq','train_score','test_loss', 'test_acc', 'test_se','test_sq', 'test_score']
         csv_write.writerow(csv_head)
 
-    for epoch in range(args.nepochs):
+    for epoch in tqdm(range(args.nepochs)):
 
         losses = AverageMeter()
         epoch_start_t = time.time()

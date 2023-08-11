@@ -15,6 +15,8 @@ import sys
 import argparse
 sys.path.append('../tqwt_tools-master/')
 from tqwt_tools import DualQDecomposition
+from tqdm import tqdm
+
 dq_params = {
     'q1': 4,
     'redundancy_1': 3,
@@ -55,8 +57,12 @@ def clip_cycle(dir, new_dir):
     dir : trainset/testset record path
     new_dir:breath cycle save path
     """
-    for file in os.listdir(dir):
-        txt_name = '../ICBHI/' + file[:-4] + '.txt'
+    if os.path.isdir(new_dir) == False:
+        os.makedirs(new_dir)
+    for file in tqdm(os.listdir(dir)):
+        if file.split('.')[1] == 'txt':
+            continue
+        txt_name = dir + file[:-4] + '.txt'
         time = np.loadtxt(txt_name)[:, 0:2]
         sound = AudioSegment.from_wav(dir + file)
         for i in range(time.shape[0]):
@@ -132,12 +138,12 @@ def makedirs(dirname):
         os.makedirs(dirname)
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--ncpu', type=int, default=16)
-parser.add_argument('--savedir', default="tqwt", type=str, help='save directory')
-parser.add_argument('--wavedir', default="test", type=str, help='train or test')
+parser.add_argument('--ncpu', type=int, default=14)
+parser.add_argument('--savedir', default="tqwt_cycles", type=str, help='save directory')
+parser.add_argument('--wavedir', default="train", type=str, help='train or test')
 args = parser.parse_args()
 save_dir = "../analysis/"+args.savedir+"/"+args.wavedir
-wav_dir = '../data/official/'+args.wavedir
+wav_dir = '../data/breath_cycles/'+args.wavedir
 
 if __name__ == '__main__':
     makedirs(save_dir + '/ori/')

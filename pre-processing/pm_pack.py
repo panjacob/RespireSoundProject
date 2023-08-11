@@ -4,7 +4,7 @@ import joblib
 import os
 from PIL import Image
 import numpy as np
-
+from tqdm import tqdm
 
 def pack(dir_stft):
     feature_ori_list = []
@@ -12,7 +12,7 @@ def pack(dir_stft):
     feature_wh_list = []
     feature_res_list = []
     label_list=[]
-    for file in os.listdir(dir_stft):
+    for file in tqdm(os.listdir(dir_stft)):
         I_stft = Image.open(dir_stft+file).convert('L')
         I_stft = np.array(I_stft)
         feature_ori_list.append(I_stft)
@@ -22,7 +22,7 @@ def pack(dir_stft):
         feature_wh_list.append(np.array(I_stft))
         I_stft = Image.open(dir_stft + '../res/' + file).convert('L')
         feature_res_list.append(np.array(I_stft))
-        txt_dir = '../data/official/train/'
+        txt_dir = '../data/official/test/'
 
         num = int(file.split('.')[0][22:])
         txt_name = file[:22] + '.txt'
@@ -45,7 +45,7 @@ def one_hot(x, K):
     return np.array(x[:, None] == np.arange(K)[None, :], dtype=int)
 
 if __name__ == '__main__':
-    com_path = '../analysis/tqwt/train/'
+    com_path = '../analysis/tqwt_cycles/test/'
 
     ori, ck, wh, res, label = pack(com_path+'ori/')
     joblib.dump((ori, ck, wh, res, label), open('../pack/official/tqwt1_4_train.p', 'wb'))

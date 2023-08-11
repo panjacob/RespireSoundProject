@@ -1,0 +1,3 @@
+1. Podziel dane na train/test za pomocą /data/divide_train_test.py
+2. Wydziel poszczególne cykle oddechowe za pomocą clip_breath_cycles.py
+3. Zastosuj preprocessing z wykorzystaniem skryptu tqwt_stft.py

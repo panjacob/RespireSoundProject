@@ -1,0 +1,5 @@
+!Biblioteka TQWT używa np.object, który nie jest wspierany przez nowsze wersje numpy. Należy zamienić wszystkie wystąpienia
+np.object na object, aby biblioteka działała poprawnie
+to samo dotyczy np.complex
+
+(można zrobić własny obraz biblioteki, aby projekt działał poprawnie) <- do zrobienia (na podstawie działającej biblioteki wyeksportować repo)
