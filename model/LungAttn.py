@@ -37,10 +37,11 @@ parser.add_argument('--dk', type=int, default=20)
 parser.add_argument('--dv', type=int, default=4)
 parser.add_argument('--nh', type=int, default=2)
 parser.add_argument('--shape', type=int, default=14)
-parser.add_argument('--save', type=str, default='../log/details/')
+parser.add_argument('--save', type=str, default='./log/details/')
 parser.add_argument('--optimizer', type=str, default='SGD')
 parser.add_argument('--debug', action='store_true')
 parser.add_argument('--gpu', type=str, default='0')
+parser.add_argument('--binary', type=bool, default=False)
 parser.add_argument('--input', '-i',
                     default="./pack/official/tqwt1_4_train.p", type=str,
                     help='path to directory with input data archives')
@@ -322,6 +323,57 @@ def normalize(x):
     sample_stft = (x - min_s) / (max_s - min_s)
     return sample_stft
 
+class LungAttnBinary(nn.Module):
+    # (self, inplanes, planes, shape, drop_rate, stride=1, v=0.2, k=2, Nh=2, downsample=None, attention=False)
+    def __init__(self):
+        super(LungAttnBinary, self).__init__()
+        self.conv1 = nn.Sequential(
+            nn.Conv2d(3,64,7,2,3,bias=True),
+            norm(64),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(3,2,1)
+        )
+        self.ResNet_0_0 = ResBlock(64, 64, stride=2, downsample= conv1x1(64, 64, 2))
+        self.ResNet_0_1 = ResBlock(64, 64, stride=2, downsample= conv1x1(64, 64, 2))
+        self.ResNet_0 = ResBlock(64, 64)
+        self.ResNet_1 = ResBlock(64, 64)
+        self.ResNet_2 = ResBlock(64, 64)
+        self.ResNet_3 = ResBlock(64, 64)
+        self.ResNet_4 = ResBlock(64, 64)
+        self.ResNet_5 = ResBlock(64, 64, use_att=True, relatt=True, shape=args.shape)
+        self.ResNet_6 = ResBlock(64, 64)
+        self.norm0 = norm(64)
+        self.relu0 = nn.ReLU(inplace=True)
+        self.pool0 = nn.AdaptiveAvgPool2d((1, 1))
+        self.linear1 = nn.Linear(64, 64)
+        self.linear2 = nn.Linear(64, 1)
+        self.dropout1 = nn.Dropout(args.dropout1)
+        self.dropout2 = nn.Dropout(args.dropout2)
+        self.flat = Flatten()
+        self.output_sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        x = self.conv1(x)
+        x = self.ResNet_0_0(x)
+        x = self.ResNet_0_1(x)
+        x = self.ResNet_0(x)
+        x = self.ResNet_1(x)
+        x = self.ResNet_2(x)
+        x = self.ResNet_3(x)
+        x = self.ResNet_4(x)
+        x = self.ResNet_5(x)
+        x = self.ResNet_6(x)
+        x = self.norm0(x)
+        x = self.relu0(x)
+        x = self.pool0(x)
+        x = self.flat(x)
+        x = self.linear1(x)
+        x = self.dropout1(x)
+        x = self.linear2(x)
+        x = self.dropout2(x)
+        x = self.output_sigmoid(x)
+        return x
+
 class myDataset(data.Dataset):
     def __init__(self, stft, targets):
         self.stft = stft
@@ -362,15 +414,22 @@ class myDataset(data.Dataset):
         return len(self.targets)
 
 
-def get_mnist_loaders(batch_size=128, test_batch_size = 500, workers = 4, perc=1.0):
+def get_mnist_loaders(batch_size=128, test_batch_size = 500, workers = 4, perc=1.0, binary=False):
     # ori, ck, wh, res, label
     ori, stftl, stfth, stftr, labels = joblib.load(open(args.input, mode='rb'))
-    stftl, stfth, stftr, labels = np.array(stftl), np.array(stfth), np.array(stftr),  one_hot(np.array(labels), 4)
+    stftl, stfth, stftr = np.array(stftl), np.array(stfth), np.array(stftr)
+    if binary:
+        labels = np.array(labels).reshape(-1, 1)
+    else:
+        labels = one_hot(np.array(labels), 4)
     stft = np.concatenate((stftl[:, np.newaxis], stfth[:, np.newaxis], stftr[:, np.newaxis]), 1)
 
     ori_tst, stftl_test, stfth_test, stftr_test, labels_test = joblib.load(open(args.test, mode='rb'))
-    stftl_test, stfth_test, stftr_test, labels_test  = np.array(stftl_test), np.array(
-        stfth_test), np.array(stftr_test), one_hot(np.array(labels_test), 4),
+    stftl_test, stfth_test, stftr_test  = np.array(stftl_test), np.array( stfth_test), np.array(stftr_test)
+    if binary:
+        labels_test = np.array(labels_test).reshape(-1, 1)
+    else:
+        labels_test = one_hot(np.array(labels_test), 4)
     stft_test = np.concatenate((stftl_test[:, np.newaxis], stfth_test[:, np.newaxis], stftr_test[:, np.newaxis]), 1)
 
     train_loader = DataLoader(
@@ -431,6 +490,30 @@ def accuracy(model, dataset_loader,criterion):
     Se = (Confusion_matrix[1][1]+Confusion_matrix[2][2]+Confusion_matrix[3][3])/(sum(Confusion_matrix[1])+sum(Confusion_matrix[2])+sum(Confusion_matrix[3])) #sensitivity
     return acc, Se, Sq, (Se+Sq)/2, losses.avg.item(), Confusion_matrix
 
+def accuracy_binary(model, dataset_loader,criterion):
+    total_correct = 0
+    targets = []
+    outputs = []
+    losses = AverageMeter()
+    for cat_stft, y in dataset_loader:
+        target_class = np.round(y.numpy())
+        targets = np.append(targets, target_class)
+        with torch.no_grad():
+            sigmoid_output = model(cat_stft.to(device))
+        y = y.type_as(sigmoid_output)
+        loss = criterion(sigmoid_output, y)
+        losses.update(loss.data, y.size(0))
+        predicted_class = np.round(sigmoid_output.cpu().detach().numpy())
+        outputs = np.append(outputs, predicted_class)
+        total_correct += np.sum(predicted_class == target_class)
+    acc = total_correct / len(dataset_loader.dataset)
+    Confusion_matrix = sk_confusion_matrix(targets.tolist(), outputs.tolist())
+    print('Confusion_matrix:')
+    print(Confusion_matrix)
+    tn, fp, fn, tp = Confusion_matrix.ravel()
+    Sq = tp / (tp + fn)
+    Se = tn / (tn + fp)
+    return acc, Se, Sq, (Se + Sq) / 2, losses.avg.item(), Confusion_matrix
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
@@ -562,8 +645,11 @@ if __name__ == '__main__':
 
     use_cuda = True
     batch_size = args.batch_size
-    net = LungAttn()
-
+    if args.binary:
+        net = LungAttnBinary()
+    else:
+        net = LungAttn()
+    _weights_init(net)
     device = torch.device("cuda:0" if use_cuda else "cpu")
     net.to(device)
     if use_cuda:
@@ -581,23 +667,26 @@ if __name__ == '__main__':
         pos_weight = torch.tensor([2,3,9,10]).to(device)
     else:
         pos_weight = None
-    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+    if args.binary:
+        criterion = nn.BCELoss()
+    else:
+        criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
     if args.optimizer == 'adam':
         optimizer = torch.optim.Adam(net.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     else:
         optimizer = torch.optim.SGD(net.parameters(), lr=args.lr, momentum=0.9, weight_decay=args.weight_decay)
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=args.step, gamma=0.1)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=args.step, gamma=0.1, verbose=True)
     # milestones = [50,70,90,100]
     # scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones, gamma=0.1, last_epoch=-1)
     # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, args.nepochs, eta_min=0, last_epoch=-1)
-    train_loader, train_eval_loader, test_loader = get_mnist_loaders(batch_size, args.test_bs, args.workers)
+    train_loader, train_eval_loader, test_loader = get_mnist_loaders(batch_size, args.test_bs, args.workers, binary=args.binary)
 
     prepare_t = time.time()
     print('The preparation time:', prepare_t - start_t)
     best_val_score = 0
     with open(saved_dir + "/result.csv", 'w') as f:
         csv_write = csv.writer(f)
-        csv_head = ['epoch', 'train_loss', 'train_acc','train_se', 'train_sq','train_score','test_loss', 'test_acc', 'test_se','test_sq', 'test_score']
+        csv_head = ['epoch', 'lr', 'train_loss', 'train_acc','train_se', 'train_sq','train_score','test_loss', 'test_acc', 'test_se','test_sq', 'test_score', 'epoch_training_time', 'evaluation_time']
         csv_write.writerow(csv_head)
 
     for epoch in tqdm(range(args.nepochs)):
@@ -647,16 +736,23 @@ if __name__ == '__main__':
         #################################test##########################################
         eval_start_t = time.time()
         net.eval()
-        train_acc, train_Se, train_Sq, train_Score, _, train_confm = accuracy(net, train_eval_loader, criterion)
-        test_acc, test_Se, test_Sq, test_Score, test_loss, test_confm = accuracy(net, test_loader,criterion)
+        if args.binary:
+            train_acc, train_Se, train_Sq, train_Score, _, train_confm = accuracy_binary(net, train_eval_loader, criterion)
+            test_acc, test_Se, test_Sq, test_Score, test_loss, test_confm = accuracy_binary(net, test_loader,criterion)
+        else:
+            train_acc, train_Se, train_Sq, train_Score, _, train_confm = accuracy(net, train_eval_loader, criterion)
+            test_acc, test_Se, test_Sq, test_Score, test_loss, test_confm = accuracy(net, test_loader,criterion)
         # scheduler.step()
         eval_end_t = time.time()
+        eval_time = eval_end_t - eval_start_t
         print('Evaluation time:', eval_end_t - eval_start_t)
+        ###############################################################################
+        print("Learning rate", scheduler.get_last_lr())
         ###############################################################################
         with open (saved_dir + "/result.csv",'a+') as f:
             csv_write = csv.writer(f)
             # data_row = [epoch, prec_t, rec_t, f1_t, suc_t]
-            data_row = [epoch, losses.avg.item(), train_acc, train_Se, train_Sq, train_Score, test_loss, test_acc, test_Se, test_Sq, test_Score]
+            data_row = [epoch, scheduler.get_last_lr(), losses.avg.item(), train_acc, train_Se, train_Sq, train_Score, test_loss, test_acc, test_Se, test_Sq, test_Score, train_t, eval_time]
             csv_write.writerow(data_row)
         logger.info(
             "Epoch {:04d}  |  "

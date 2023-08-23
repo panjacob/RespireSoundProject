@@ -87,7 +87,7 @@ class ModelCharacteristic:
 if __name__ == "__main__":
     import os
     print(os.getcwd())
-    state_dict_path = "./log/details/nomix_224bs32lr0.1dp0.20.40.3dk20dv4nh2ep100wd0/saved_model_params"
+    state_dict_path = "./log/details/mix_224bs256lr0.1dp0.20.40.3dk20dv4nh2ep100wd0_12_08/saved_model_params"
     model = LungAttn()
     train_loader, train_eval_loader, test_loader = get_mnist_loaders(batch_size=128, test_batch_size=100, workers=12)
     model.load_state_dict(torch.load(state_dict_path))
