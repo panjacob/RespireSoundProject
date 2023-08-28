@@ -20,10 +20,10 @@ import time
 import csv
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--nepochs', type=int, default=100)
+parser.add_argument('--nepochs', type=int, default=30)
 parser.add_argument('--size', type=int, default=224)
 parser.add_argument('--mixup', type=eval, default=False, choices=[True, False])
-parser.add_argument('--lr', type=float, default=0.1)
+parser.add_argument('--lr', type=float, default=0.01)
 parser.add_argument('--batch_size', type=int, default=16)
 parser.add_argument('--test_bs', type=int, default=16)
 parser.add_argument('--workers', type=int, default=2)
@@ -352,7 +352,8 @@ class LungAttnBinary(nn.Module):
         self.flat = Flatten()
         self.output_sigmoid = nn.Sigmoid()
 
-        resnet_layers = [
+        freeze_layers = [
+            self.conv1,
             self.ResNet_0_0,
             self.ResNet_0_1,
             self.ResNet_0,
@@ -364,7 +365,7 @@ class LungAttnBinary(nn.Module):
             self.ResNet_6
         ]
 
-        for layer in resnet_layers:
+        for layer in freeze_layers:
             for param in layer.parameters():
                 param.requires_grad = False
 
