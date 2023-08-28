@@ -24,9 +24,9 @@ parser.add_argument('--nepochs', type=int, default=100)
 parser.add_argument('--size', type=int, default=224)
 parser.add_argument('--mixup', type=eval, default=False, choices=[True, False])
 parser.add_argument('--lr', type=float, default=0.1)
-parser.add_argument('--batch_size', type=int, default=32)
-parser.add_argument('--test_bs', type=int, default=64)
-parser.add_argument('--workers', type=int, default=4)
+parser.add_argument('--batch_size', type=int, default=16)
+parser.add_argument('--test_bs', type=int, default=16)
+parser.add_argument('--workers', type=int, default=2)
 parser.add_argument('--alpha', type=float, default=0.5)
 parser.add_argument('--step', type=int, default=50)
 parser.add_argument('--weight_decay', type=float, default=0)
@@ -41,11 +41,11 @@ parser.add_argument('--save', type=str, default='./log/details/')
 parser.add_argument('--optimizer', type=str, default='SGD')
 parser.add_argument('--debug', action='store_true')
 parser.add_argument('--gpu', type=str, default='0')
-parser.add_argument('--binary', type=bool, default=False)
+parser.add_argument('--binary', type=bool, default=True)
 parser.add_argument('--input', '-i',
-                    default="./pack/official/tqwt1_4_train.p", type=str,
+                    default="./pack/binary/tqwt1_4_train.p", type=str,
                     help='path to directory with input data archives')
-parser.add_argument('--test', default="./pack/official/tqwt1_4_test.p",
+parser.add_argument('--test', default="./pack/binary/tqwt1_4_test.p",
                     type=str, help='path to directory with test data archives')
 args = parser.parse_args()
 #######################################################################################
@@ -352,6 +352,22 @@ class LungAttnBinary(nn.Module):
         self.flat = Flatten()
         self.output_sigmoid = nn.Sigmoid()
 
+        resnet_layers = [
+            self.ResNet_0_0,
+            self.ResNet_0_1,
+            self.ResNet_0,
+            self.ResNet_1,
+            self.ResNet_2,
+            self.ResNet_3,
+            self.ResNet_4,
+            self.ResNet_5,
+            self.ResNet_6
+        ]
+
+        for layer in resnet_layers:
+            for param in layer.parameters():
+                param.requires_grad = False
+
     def forward(self, x):
         x = self.conv1(x)
         x = self.ResNet_0_0(x)
@@ -647,6 +663,10 @@ if __name__ == '__main__':
     batch_size = args.batch_size
     if args.binary:
         net = LungAttnBinary()
+        saved_model_state_dict = torch.load('baseline_4_class')
+        saved_model_state_dict['linear2.weight'] = saved_model_state_dict['linear2.weight'][:1]
+        saved_model_state_dict['linear2.bias'] = saved_model_state_dict['linear2.bias'][:1]
+        net.load_state_dict(saved_model_state_dict, strict=False)
     else:
         net = LungAttn()
     _weights_init(net)
@@ -766,3 +786,5 @@ if __name__ == '__main__':
             logger.info(test_confm)
             print('Saving best model parameters with Val F1 score = %.4f' % (best_val_score))
             torch.save(net.state_dict(), saved_dir + '/saved_model_params')
+    import os
+    os.system("rundll32.exe powrprof.dll,SetSuspendState 0,1,0")
