@@ -356,6 +356,23 @@ class LungAttnBinary(nn.Module):
         self.flat = Flatten()
         self.output_sigmoid = nn.Sigmoid()
 
+        freeze_layers = [
+            self.conv1,
+            self.ResNet_0_0,
+            self.ResNet_0_1,
+            self.ResNet_0,
+            self.ResNet_1,
+            self.ResNet_2,
+            self.ResNet_3,
+            self.ResNet_4,
+            self.ResNet_5,
+            self.ResNet_6
+        ]
+
+        for layer in freeze_layers:
+            for param in layer.parameters():
+                param.requires_grad = False
+
     def forward(self, x):
         x = self.conv1(x)
         x = self.ResNet_0_0(x)
@@ -653,6 +670,10 @@ if __name__ == '__main__':
     batch_size = args.batch_size
     if args.binary:
         net = LungAttnBinary()
+        saved_model_state_dict = torch.load('baseline_4_class')
+        saved_model_state_dict['linear2.weight'] = saved_model_state_dict['linear2.weight'][:1]
+        saved_model_state_dict['linear2.bias'] = saved_model_state_dict['linear2.bias'][:1]
+        net.load_state_dict(saved_model_state_dict, strict=False)
     else:
         net = LungAttn()
     _weights_init(net)
