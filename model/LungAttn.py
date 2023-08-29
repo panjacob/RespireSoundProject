@@ -16,6 +16,8 @@ from sklearn.metrics import confusion_matrix as sk_confusion_matrix
 from tensorboardX import SummaryWriter
 from torch.autograd import Variable
 from tqdm import tqdm
+from pruning_tools import regrowth_structured
+import torch.nn.utils.prune as prune
 import time
 import csv
 
@@ -42,6 +44,8 @@ parser.add_argument('--optimizer', type=str, default='SGD')
 parser.add_argument('--debug', action='store_true')
 parser.add_argument('--gpu', type=str, default='0')
 parser.add_argument('--binary', type=bool, default=False)
+parser.add_argument('--use_regrowth', type=bool, default=False)
+parser.add_argument('--use_pruning', type=bool, default=False)
 parser.add_argument('--input', '-i',
                     default="./pack/official/tqwt1_4_train.p", type=str,
                     help='path to directory with input data archives')
@@ -643,6 +647,8 @@ if __name__ == '__main__':
     logger = get_logger(logpath=os.path.join(saved_dir, 'logs'), filepath=os.path.abspath(__file__))
     logger.info(args)
 
+
+
     use_cuda = True
     batch_size = args.batch_size
     if args.binary:
@@ -691,6 +697,13 @@ if __name__ == '__main__':
 
     for epoch in tqdm(range(args.nepochs)):
 
+        ## REGROW CONNECTIONS
+        if epoch > 0 and args.use_regrowth:
+            for _, module in net.named_modules():
+                if isinstance(module, torch.nn.Conv2d):
+                    regrowth_structured(module, name='weight', regrowth_method='magnitude', amount=0.5)
+
+
         losses = AverageMeter()
         epoch_start_t = time.time()
         batch_end_t = time.time()
@@ -726,6 +739,8 @@ if __name__ == '__main__':
             batch_end_t = time.time()
 
         train_t = batch_end_t - epoch_start_t
+
+
         if args.mixup == True:
             logger.info("Normal {}  | Crackle {} | Wheeze {} | Both {}".format(sn0,sn1,sn2,sn3))
         print(sn0,sn1,sn2,sn3)
@@ -766,3 +781,9 @@ if __name__ == '__main__':
             logger.info(test_confm)
             print('Saving best model parameters with Val F1 score = %.4f' % (best_val_score))
             torch.save(net.state_dict(), saved_dir + '/saved_model_params')
+
+        # prune model
+        if args.use_prunning:
+            for name, module in net.named_modules():
+                if isinstance(module, torch.nn.Conv2d):
+                    prune.ln_structured(module, name="weight", amount=0.8, n=2, dim=0)
