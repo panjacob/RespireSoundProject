@@ -26,6 +26,7 @@ parser.add_argument('--nepochs', type=int, default=100)
 parser.add_argument('--size', type=int, default=224)
 parser.add_argument('--mixup', type=eval, default=False, choices=[True, False])
 parser.add_argument('--use_pretrained', type=eval, default=False, choices=[True, False])
+parser.add_argument('--freeze', type=eval, default=False, choices=[True, False])
 parser.add_argument('--lr', type=float, default=0.1)
 parser.add_argument('--batch_size', type=int, default=32)
 parser.add_argument('--test_bs', type=int, default=64)
@@ -370,9 +371,10 @@ class LungAttnBinary(nn.Module):
             self.ResNet_6
         ]
 
-        for layer in freeze_layers:
-            for param in layer.parameters():
-                param.requires_grad = False
+        if args.freeze:
+            for layer in freeze_layers:
+                for param in layer.parameters():
+                    param.requires_grad = False
 
     def forward(self, x):
         x = self.conv1(x)
@@ -807,7 +809,7 @@ if __name__ == '__main__':
             torch.save(net.state_dict(), saved_dir + '/saved_model_params')
 
         # prune model
-        if args.use_prunning:
+        if args.use_pruning:
             for name, module in net.named_modules():
                 if isinstance(module, torch.nn.Conv2d):
                     prune.ln_structured(module, name="weight", amount=0.8, n=2, dim=0)
