@@ -16,7 +16,7 @@ from sklearn.metrics import confusion_matrix as sk_confusion_matrix
 from tensorboardX import SummaryWriter
 from torch.autograd import Variable
 from tqdm import tqdm
-from pruning_tools import regrowth_structured
+from pruning_tools import regrowth_unstructured
 import torch.nn.utils.prune as prune
 import time
 import csv
@@ -25,6 +25,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--nepochs', type=int, default=100)
 parser.add_argument('--size', type=int, default=224)
 parser.add_argument('--mixup', type=eval, default=False, choices=[True, False])
+parser.add_argument('--use_pretrained', type=eval, default=False, choices=[True, False])
 parser.add_argument('--lr', type=float, default=0.1)
 parser.add_argument('--batch_size', type=int, default=32)
 parser.add_argument('--test_bs', type=int, default=64)
@@ -670,13 +671,15 @@ if __name__ == '__main__':
     batch_size = args.batch_size
     if args.binary:
         net = LungAttnBinary()
-        saved_model_state_dict = torch.load('baseline_4_class')
-        saved_model_state_dict['linear2.weight'] = saved_model_state_dict['linear2.weight'][:1]
-        saved_model_state_dict['linear2.bias'] = saved_model_state_dict['linear2.bias'][:1]
-        net.load_state_dict(saved_model_state_dict, strict=False)
+        if args.use_pretrained:
+            saved_model_state_dict = torch.load('baseline_4_class')
+            saved_model_state_dict['linear2.weight'] = saved_model_state_dict['linear2.weight'][:1]
+            saved_model_state_dict['linear2.bias'] = saved_model_state_dict['linear2.bias'][:1]
+            net.load_state_dict(saved_model_state_dict, strict=False)
     else:
         net = LungAttn()
-    _weights_init(net)
+    if not args.use_pretrained:
+        _weights_init(net)
     device = torch.device("cuda:0" if use_cuda else "cpu")
     net.to(device)
     if use_cuda:
@@ -722,7 +725,7 @@ if __name__ == '__main__':
         if epoch > 0 and args.use_regrowth:
             for _, module in net.named_modules():
                 if isinstance(module, torch.nn.Conv2d):
-                    regrowth_structured(module, name='weight', regrowth_method='magnitude', amount=0.5)
+                    regrowth_unstructured(module, name='weight', regrowth_method='magnitude', amount=0.5)
 
 
         losses = AverageMeter()

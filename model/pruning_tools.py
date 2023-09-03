@@ -43,7 +43,7 @@ class Regrowth(prune.BasePruningMethod):
             mask = torch.reshape(mask_flat, tuple(mask.size()))
         return mask
 
-def regrowth_structured(module, name, regrowth_method, amount, seed=5000):
+def regrowth_unstructured(module, name, regrowth_method, amount, seed=5000):
     kwargs = {'regrowth_method': regrowth_method,
               'amount': amount,
               'seed': seed}
