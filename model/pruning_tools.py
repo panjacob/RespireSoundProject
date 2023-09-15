@@ -34,11 +34,11 @@ class Regrowth(prune.BasePruningMethod):
             chosen_ones = pruned_weight_indices[indices_of_chosen_ones]
             mask[chosen_ones] = 1.
         if self.regrowth_method == 'magnitude':
-            pruned_weights_mask = complement_mask - mask * torch.ones_like(mask) * float('inf')
+            pruned_weights_mask = complement_mask
             pruned_weights = t * pruned_weights_mask
             pruned_weights_flat = pruned_weights.flatten()
             mask_flat = mask.flatten()
-            most_important = torch.topk(pruned_weights_flat, num_to_regrow).indices
+            most_important = torch.topk(torch.abs(pruned_weights_flat), num_to_regrow).indices
             mask_flat[most_important] = 1.
             mask = torch.reshape(mask_flat, tuple(mask.size()))
         return mask
@@ -48,6 +48,36 @@ def regrowth_unstructured(module, name, regrowth_method, amount, seed=5000):
               'amount': amount,
               'seed': seed}
     Regrowth.apply(module, name, **kwargs)
+
+
+class RegrowthRigL(prune.BasePruningMethod):
+
+
+    PRUNING_TYPE = 'global'
+
+    def __init__(self,
+                 amount):
+        self.amount = amount
+    def compute_mask(self, t, default_mask):
+        mask = default_mask.clone()
+        # calculate complementary to given mask e.g. [0, 0, 1, 0] -> [1, 1, 0, 1]
+        complement_mask = torch.logical_xor(mask, torch.ones_like(mask)).type(mask.type())
+        num_pruned = int(torch.sum(complement_mask))
+        number_of_weights = torch.numel(t)
+        num_to_regrow = int(self.amount * number_of_weights)
+        #regrow
+        pruned_grads_mask = complement_mask
+        pruned_grads = t * pruned_grads_mask
+        pruned_grads_flat = pruned_grads.flatten()
+        mask_flat = mask.flatten()
+        most_important = torch.topk(torch.abs(pruned_grads_flat), num_to_regrow).indices
+        mask_flat[most_important] = 1.
+        mask = torch.reshape(mask_flat, tuple(mask.size()))
+        return mask
+
+def regrowth_rigl(module, name, amount):
+    kwargs = {'amount': amount}
+    RegrowthRigL.apply(module, name, **kwargs)
 
 if __name__ == "__main__":
     regrowth_pruning = Regrowth(regrowth_method='magnitude', amount=0.5)

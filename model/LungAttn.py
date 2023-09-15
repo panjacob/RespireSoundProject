@@ -1,4 +1,4 @@
-
+import copy
 import os
 import argparse
 import random
@@ -16,7 +16,7 @@ from sklearn.metrics import confusion_matrix as sk_confusion_matrix
 from tensorboardX import SummaryWriter
 from torch.autograd import Variable
 from tqdm import tqdm
-from pruning_tools import regrowth_unstructured
+from pruning_tools import regrowth_unstructured, regrowth_rigl
 import torch.nn.utils.prune as prune
 import time
 import csv
@@ -26,6 +26,8 @@ parser.add_argument('--nepochs', type=int, default=100)
 parser.add_argument('--size', type=int, default=224)
 parser.add_argument('--mixup', type=eval, default=False, choices=[True, False])
 parser.add_argument('--use_pretrained', type=eval, default=False, choices=[True, False])
+parser.add_argument('--remove_5_layers', type=eval, default=False, choices=[True, False])
+parser.add_argument('--quantization', type=eval, default=False, choices=[True, False])
 parser.add_argument('--freeze', type=eval, default=False, choices=[True, False])
 parser.add_argument('--lr', type=float, default=0.1)
 parser.add_argument('--batch_size', type=int, default=32)
@@ -47,7 +49,18 @@ parser.add_argument('--debug', action='store_true')
 parser.add_argument('--gpu', type=str, default='0')
 parser.add_argument('--binary', type=bool, default=False)
 parser.add_argument('--use_regrowth', type=bool, default=False)
+parser.add_argument('--regrowth_amount', type=float, default=0.8)
+parser.add_argument('--regrowth_decay', type=float, default=0.98)
+parser.add_argument('--prunning_amount', type=float, default=0.3)
 parser.add_argument('--use_pruning', type=bool, default=False)
+parser.add_argument('--rigl', type=bool, default=False)
+parser.add_argument('--rigl_deltaT', type=int, default=5)
+parser.add_argument('--rigl_t_end', type=int, default=60)
+parser.add_argument('--rigl_alpha', type=int, default=0.3)
+parser.add_argument('--rigl_sparsity', type=float, default=0.0)
+parser.add_argument('--distillation', type=bool, default=False)
+parser.add_argument('--distillation_teacher_path', type=str, default="./log/pruned/model_rigled0.0/saved_model_params")
+parser.add_argument('--distillation_weight', type=float, default=0.4)
 parser.add_argument('--input', '-i',
                     default="./pack/official/tqwt1_4_train.p", type=str,
                     help='path to directory with input data archives')
@@ -247,7 +260,7 @@ class LungAttn(nn.Module):
         self.ResNet_2 = ResBlock(64, 64)
         self.ResNet_3 = ResBlock(64, 64)
         self.ResNet_4 = ResBlock(64, 64)
-        self.ResNet_5 = ResBlock(64, 64, use_att=True, relatt=True, shape=args.shape)
+        # self.ResNet_5 = ResBlock(64, 64, use_att=True, relatt=True, shape=args.shape)
         self.ResNet_6 = ResBlock(64, 64)
         self.norm0 = norm(64)
         self.relu0 = nn.ReLU(inplace=True)
@@ -267,7 +280,7 @@ class LungAttn(nn.Module):
         x = self.ResNet_2(x)
         x = self.ResNet_3(x)
         x = self.ResNet_4(x)
-        x = self.ResNet_5(x)
+        #x = self.ResNet_5(x)
         x = self.ResNet_6(x)
         x = self.norm0(x)
         x = self.relu0(x)
@@ -341,6 +354,88 @@ class LungAttnBinary(nn.Module):
         )
         self.ResNet_0_0 = ResBlock(64, 64, stride=2, downsample= conv1x1(64, 64, 2))
         self.ResNet_0_1 = ResBlock(64, 64, stride=2, downsample= conv1x1(64, 64, 2))
+        if not args.remove_5_layers:
+            self.ResNet_0 = ResBlock(64, 64)
+            self.ResNet_1 = ResBlock(64, 64)
+            self.ResNet_2 = ResBlock(64, 64)
+            self.ResNet_3 = ResBlock(64, 64)
+            self.ResNet_4 = ResBlock(64, 64)
+        self.ResNet_5 = ResBlock(64, 64, use_att=True, relatt=True, shape=args.shape)
+        self.ResNet_6 = ResBlock(64, 64)
+        self.norm0 = norm(64)
+        self.relu0 = nn.ReLU(inplace=True)
+        self.pool0 = nn.AdaptiveAvgPool2d((1, 1))
+        self.linear1 = nn.Linear(64, 64)
+        self.linear2 = nn.Linear(64, 1)
+        self.dropout1 = nn.Dropout(args.dropout1)
+        self.dropout2 = nn.Dropout(args.dropout2)
+        self.flat = Flatten()
+        self.output_sigmoid = nn.Sigmoid()
+
+        if not args.remove_5_layers:
+            freeze_layers = [
+                self.conv1,
+                self.ResNet_0_0,
+                self.ResNet_0_1,
+                self.ResNet_0,
+                self.ResNet_1,
+                self.ResNet_2,
+                self.ResNet_3,
+                self.ResNet_4,
+                self.ResNet_5,
+                self.ResNet_6
+            ]
+        else:
+            freeze_layers = [
+                self.conv1,
+                self.ResNet_0_0,
+                self.ResNet_0_1,
+                self.ResNet_5,
+                self.ResNet_6
+            ]
+
+
+        if args.freeze:
+            for layer in freeze_layers:
+                for param in layer.parameters():
+                    param.requires_grad = False
+
+    def forward(self, x):
+        x = self.conv1(x)
+        x = self.ResNet_0_0(x)
+        x = self.ResNet_0_1(x)
+        if not args.remove_5_layers:
+            x = self.ResNet_0(x)
+            x = self.ResNet_1(x)
+            x = self.ResNet_2(x)
+            x = self.ResNet_3(x)
+            x = self.ResNet_4(x)
+        x = self.ResNet_5(x)
+        x = self.ResNet_6(x)
+        x = self.norm0(x)
+        x = self.relu0(x)
+        x = self.pool0(x)
+        x = self.flat(x)
+        x = self.linear1(x)
+        x = self.dropout1(x)
+        x = self.linear2(x)
+        x = self.dropout2(x)
+        x = self.output_sigmoid(x)
+        return x
+
+
+class StudentLungAttnBinary(nn.Module):
+    # (self, inplanes, planes, shape, drop_rate, stride=1, v=0.2, k=2, Nh=2, downsample=None, attention=False)
+    def __init__(self):
+        super(StudentLungAttnBinary, self).__init__()
+        self.conv1 = nn.Sequential(
+            nn.Conv2d(3, 64, 7, 2, 3, bias=True),
+            norm(64),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(3, 2, 1)
+        )
+        self.ResNet_0_0 = ResBlock(64, 64, stride=2, downsample=conv1x1(64, 64, 2))
+        self.ResNet_0_1 = ResBlock(64, 64, stride=2, downsample=conv1x1(64, 64, 2))
         self.ResNet_0 = ResBlock(64, 64)
         self.ResNet_1 = ResBlock(64, 64)
         self.ResNet_2 = ResBlock(64, 64)
@@ -358,23 +453,33 @@ class LungAttnBinary(nn.Module):
         self.flat = Flatten()
         self.output_sigmoid = nn.Sigmoid()
 
-        freeze_layers = [
-            self.conv1,
-            self.ResNet_0_0,
-            self.ResNet_0_1,
-            self.ResNet_0,
-            self.ResNet_1,
-            self.ResNet_2,
-            self.ResNet_3,
-            self.ResNet_4,
-            self.ResNet_5,
-            self.ResNet_6
-        ]
+        if not args.remove_5_layers:
+            freeze_layers = [
+                self.conv1,
+                self.ResNet_0_0,
+                self.ResNet_0_1,
+                # self.ResNet_0,
+                # self.ResNet_1,
+                # self.ResNet_2,
+                # self.ResNet_3,
+                # self.ResNet_4,
+                # self.ResNet_5,
+                self.ResNet_6
+            ]
+        else:
+            freeze_layers = [
+                self.conv1,
+                self.ResNet_0_0,
+                self.ResNet_0_1,
+                self.ResNet_5,
+                self.ResNet_6
+            ]
 
         if args.freeze:
             for layer in freeze_layers:
                 for param in layer.parameters():
                     param.requires_grad = False
+
 
     def forward(self, x):
         x = self.conv1(x)
@@ -396,6 +501,19 @@ class LungAttnBinary(nn.Module):
         x = self.linear2(x)
         x = self.dropout2(x)
         x = self.output_sigmoid(x)
+        return x
+
+
+class QuantizedLungAttnBinary(nn.Module):
+    def __init__(self, model_fp):
+        super(QuantizedLungAttnBinary, self).__init__()
+        self.model_fp = model_fp
+        self.quant = torch.quantization.QuantStub()
+        self.dequant = torch.quantization.DeQuantStub()
+    def __call__(self, x):
+        x = self.quant(x)
+        x = self.model_fp(x)
+        x = self.dequant(x)
         return x
 
 class myDataset(data.Dataset):
@@ -441,7 +559,7 @@ class myDataset(data.Dataset):
 def get_mnist_loaders(batch_size=128, test_batch_size = 500, workers = 4, perc=1.0, binary=False):
     # ori, ck, wh, res, label
     ori, stftl, stfth, stftr, labels = joblib.load(open(args.input, mode='rb'))
-    stftl, stfth, stftr = np.array(stftl), np.array(stfth), np.array(stftr)
+    stftl, stfth, stftr = np.array(stftl), np.array(stfth), np.array(ori)
     if binary:
         labels = np.array(labels).reshape(-1, 1)
     else:
@@ -449,7 +567,7 @@ def get_mnist_loaders(batch_size=128, test_batch_size = 500, workers = 4, perc=1
     stft = np.concatenate((stftl[:, np.newaxis], stfth[:, np.newaxis], stftr[:, np.newaxis]), 1)
 
     ori_tst, stftl_test, stfth_test, stftr_test, labels_test = joblib.load(open(args.test, mode='rb'))
-    stftl_test, stfth_test, stftr_test  = np.array(stftl_test), np.array( stfth_test), np.array(stftr_test)
+    stftl_test, stfth_test, stftr_test = np.array(stftl_test), np.array( stfth_test), np.array(ori_tst)
     if binary:
         labels_test = np.array(labels_test).reshape(-1, 1)
     else:
@@ -514,7 +632,7 @@ def accuracy(model, dataset_loader,criterion):
     Se = (Confusion_matrix[1][1]+Confusion_matrix[2][2]+Confusion_matrix[3][3])/(sum(Confusion_matrix[1])+sum(Confusion_matrix[2])+sum(Confusion_matrix[3])) #sensitivity
     return acc, Se, Sq, (Se+Sq)/2, losses.avg.item(), Confusion_matrix
 
-def accuracy_binary(model, dataset_loader,criterion):
+def accuracy_binary(model, dataset_loader,criterion, device):
     total_correct = 0
     targets = []
     outputs = []
@@ -541,6 +659,33 @@ def accuracy_binary(model, dataset_loader,criterion):
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
+
+def model_equivalence(model_1, model_2, device, rtol=1e-05, atol=1e-08, num_tests=100, input_size=(1,3,32,32)):
+
+    model_1.to(device)
+    model_2.to(device)
+
+    for _ in range(num_tests):
+        x = torch.rand(size=input_size).to(device)
+        y1 = model_1(x).detach().cpu().numpy()
+        y2 = model_2(x).detach().cpu().numpy()
+        if np.allclose(a=y1, b=y2, rtol=rtol, atol=atol, equal_nan=False) == False:
+            print("Model equivalence test sample failed: ")
+            print(y1)
+            print(y2)
+            return False
+
+    return True
+
+
+def save_torchscript_model(model, model_dir, model_filename):
+    if not os.path.exists(model_dir):
+        os.makedirs(model_dir)
+    model_filepath = os.path.join(model_dir, model_filename)
+    torch.jit.save(torch.jit.script(model), model_filepath)
+def load_torchscript_model(model_filepath, device):
+    model = torch.jit.load(model_filepath, map_location=device)
+    return model
 
 def makedirs(dirname):
     if not os.path.exists(dirname):
@@ -650,6 +795,306 @@ def mixup_data(x, y, alpha=1.0):
 
     return len(first), len(second)+mixed_x1.size()[0], len(third)+mixed_x2.size()[0], len(fourth)+mixed_x3.size()[0], cat_x, cat_y
 
+def train_knowledge_distillation(teacher, student, train_loader, test_loader):
+    prepare_t = time.time()
+    print('The preparation time:', prepare_t - start_t)
+    best_val_score = 0
+    amount_prunned = 0.0
+    amount_regrown = 0.0
+    with open(saved_dir + "/result.csv", 'w') as f:
+        csv_write = csv.writer(f)
+        csv_head = ['epoch', 'lr', 'train_loss', 'train_acc', 'train_se', 'train_sq', 'train_score', 'test_loss',
+                    'test_acc', 'test_se', 'test_sq', 'test_score', 'epoch_training_time', 'evaluation_time',
+                    'amount_prunned', 'amount_regrown']
+        csv_write.writerow(csv_head)
+
+    # set modes
+    teacher.eval()
+    student.train()
+
+    for epoch in tqdm(range(args.nepochs)):
+        losses = AverageMeter()
+        epoch_start_t = time.time()
+        batch_end_t = time.time()
+        ################################train##########################################
+        student.train()
+        temp = 0
+        sn0, sn1, sn2, sn3 = 0, 0, 0, 0
+        load_t, mix_t = 0, 0
+        # adjust_learning_rate(optimizer, epoch)
+        for batch_idx, (cat_stft, labels) in enumerate(train_loader):
+            batch_t = time.time()
+            load_t += batch_t - batch_end_t
+
+            if args.mixup:
+                n0, n1, n2, n3, cat_stft, labels = mixup_data(cat_stft, labels, args.alpha)
+                mix_end_t = time.time()
+                mix_t += mix_end_t - batch_t
+                sn0 = sn0 + n0
+                sn1 = sn1 + n1
+                sn2 = sn2 + n2
+                sn3 = sn3 + n3
+            # target_class = torch.argmax(labels, dim=1)
+            cat_stft, labels = Variable(cat_stft.type(torch.FloatTensor).to(device)), Variable(labels.to(device))
+
+            # get teacher outputs
+            with torch.no_grad():
+                teacher_outputs = teacher(cat_stft)
+
+            # get student outputs
+            student_outputs = student(cat_stft)
+
+            # calculate distillation_loss
+            distillation_loss = criterion(student_outputs, teacher_outputs)
+
+            # label loss
+            labels = labels.type_as(student_outputs)
+            label_loss = criterion(student_outputs, labels)
+
+            loss = args.distillation_weight * distillation_loss + (1 - args.distillation_weight)*label_loss
+            losses.update(loss.data, labels.size(0))
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            batch_end_t = time.time()
+
+        train_t = batch_end_t - epoch_start_t
+
+        if args.mixup == True:
+            logger.info("Normal {}  | Crackle {} | Wheeze {} | Both {}".format(sn0, sn1, sn2, sn3))
+        print(sn0, sn1, sn2, sn3)
+        print('Loading dataset time:', load_t)
+        print('Data augmentation time:', mix_t)
+        print('Training time per epoch:', train_t)
+        scheduler.step()
+        #################################test##########################################
+        eval_start_t = time.time()
+        student.eval()
+        if args.binary:
+            train_acc, train_Se, train_Sq, train_Score, _, train_confm = accuracy_binary(student, train_eval_loader,
+                                                                                         criterion, device)
+            test_acc, test_Se, test_Sq, test_Score, test_loss, test_confm = accuracy_binary(student, test_loader,
+                                                                                            criterion, device)
+        else:
+            train_acc, train_Se, train_Sq, train_Score, _, train_confm = accuracy(student, train_eval_loader, criterion)
+            test_acc, test_Se, test_Sq, test_Score, test_loss, test_confm = accuracy(student, test_loader, criterion)
+        # scheduler.step()
+        eval_end_t = time.time()
+        eval_time = eval_end_t - eval_start_t
+        print('Evaluation time:', eval_end_t - eval_start_t)
+        ###############################################################################
+        print("Learning rate", scheduler.get_last_lr())
+        ###############################################################################
+        with open(saved_dir + "/result.csv", 'a+') as f:
+            csv_write = csv.writer(f)
+            # data_row = [epoch, prec_t, rec_t, f1_t, suc_t]
+            data_row = [epoch, scheduler.get_last_lr(), losses.avg.item(), train_acc, train_Se, train_Sq, train_Score,
+                        test_loss, test_acc, test_Se, test_Sq, test_Score, train_t, eval_time, amount_prunned,
+                        amount_regrown]
+            csv_write.writerow(data_row)
+        logger.info(
+            "Epoch {:04d}  |  "
+            "Train Loss {:.4f} |Train Acc {:.4f} |  train Se {:.4f} | train Sq {:.4f} | train Score {:.4f} | Test Loss {:.4f} |Test Acc {:.4f} | test Se {:.4f} | test Sq {:.4f} | test Score {:.4f}".format(
+                epoch, losses.avg.item(), train_acc, train_Se, train_Sq, train_Score, test_loss, test_acc, test_Se,
+                test_Sq, test_Score
+            )
+        )
+
+        if test_Score > best_val_score and test_Score != 0.5:
+            best_val_score = test_Score
+            logger.info(test_confm)
+            print('Saving best model parameters with Val F1 score = %.4f' % (best_val_score))
+            torch.save(student.state_dict(), saved_dir + '/saved_model_params')
+
+
+def train_model(model, train_loader, test_loader):
+    prepare_t = time.time()
+    print('The preparation time:', prepare_t - start_t)
+    best_val_score = 0
+    amount_prunned = 0.0
+    amount_regrown = 0.0
+    with open(saved_dir + "/result.csv", 'w') as f:
+        csv_write = csv.writer(f)
+        csv_head = ['epoch', 'lr', 'train_loss', 'train_acc', 'train_se', 'train_sq', 'train_score', 'test_loss',
+                    'test_acc', 'test_se', 'test_sq', 'test_score', 'epoch_training_time', 'evaluation_time', 'amount_prunned', 'amount_regrown']
+        csv_write.writerow(csv_head)
+
+    regrowth_amount = args.regrowth_amount
+
+    if args.rigl:
+        prunned_connections = 0
+        connections_available_for_pruning = 0
+        for name, module in model.named_modules():
+            if isinstance(module, torch.nn.Conv2d) or isinstance(module, torch.nn.Linear):
+                prune.l1_unstructured(module, name="weight", amount=args.rigl_sparsity)
+                weights_num = torch.numel(module.weight_mask)
+                connections_available_for_pruning += weights_num
+                prunned_connections += (weights_num - torch.count_nonzero(module.weight_mask))
+        amount_prunned = 100* (prunned_connections/connections_available_for_pruning)
+        print("RigL prunned {} out of {} connections. {} % connections were prunned".format(prunned_connections,
+                                                                                      connections_available_for_pruning,
+                                                                                      amount_prunned))
+
+
+    for epoch in tqdm(range(args.nepochs)):
+
+        if args.rigl:
+            fdecay = (args.rigl_alpha / 2) * (1 + np.cos(np.pi * epoch / args.rigl_t_end))
+
+        ## REGROW CONNECTIONS
+        if epoch > 0 and args.use_regrowth:
+            connections_available_for_regrowth = 0
+            connections_regrown = 0
+            regrowth_amount = regrowth_amount * args.regrowth_decay
+            for _, module in model.named_modules():
+                if isinstance(module, torch.nn.Conv2d) or isinstance(module, torch.nn.Linear):
+                    weights_num = torch.numel(module.weight_mask)
+                    current_connections_available_for_regrowth = int(weights_num - torch.count_nonzero(module.weight_mask))
+                    connections_available_for_regrowth += current_connections_available_for_regrowth
+                    regrowth_unstructured(module, name='weight', regrowth_method='magnitude', amount=regrowth_amount)
+                    connections_regrown += int(current_connections_available_for_regrowth - (weights_num - torch.count_nonzero(module.weight_mask)))
+            amount_regrown = 100*(connections_regrown / connections_available_for_regrowth)
+            print("Regrowth amount:", regrowth_amount)
+            print("Regrown {} out of {} pruned connections. {} % prunned connections were regrown".format(connections_regrown,
+                                                                                          connections_available_for_regrowth,
+                                                                                          amount_regrown))
+
+        if (args.rigl and (epoch-1) % args.rigl_deltaT == 0 and (epoch-1) != 0 and epoch < args.rigl_t_end):
+            print("Epoch {} : RigL activated.".format(epoch))
+            connections_available_for_regrowth = 0
+            connections_regrown = 0
+            for _, module in model.named_modules():
+                if isinstance(module, torch.nn.Conv2d) or isinstance(module, torch.nn.Linear):
+                    weights_num = torch.numel(module.weight_mask)
+                    current_connections_available_for_regrowth = int(weights_num - torch.count_nonzero(module.weight_mask))
+                    connections_available_for_regrowth += current_connections_available_for_regrowth
+                    regrowth_rigl(module, 'weight', amount=fdecay*(1-args.rigl_sparsity))
+                    connections_regrown += int(current_connections_available_for_regrowth - (weights_num - torch.count_nonzero(module.weight_mask)))
+            amount_regrown = 100 * (connections_regrown / connections_available_for_regrowth)
+            print("RIGL regrown {} out of {} connections. {} % connections were regrown".format(
+                connections_regrown,
+                connections_available_for_regrowth,
+                amount_regrown))
+
+        losses = AverageMeter()
+        epoch_start_t = time.time()
+        batch_end_t = time.time()
+        ################################train##########################################
+        model.train()
+        temp = 0
+        sn0, sn1, sn2, sn3 = 0, 0, 0, 0
+        load_t, mix_t = 0, 0
+        # adjust_learning_rate(optimizer, epoch)
+        for batch_idx, (cat_stft, labels) in enumerate(train_loader):
+            batch_t = time.time()
+            load_t += batch_t - batch_end_t
+
+            if args.mixup:
+                n0, n1, n2, n3, cat_stft, labels = mixup_data(cat_stft, labels, args.alpha)
+                mix_end_t = time.time()
+                mix_t += mix_end_t - batch_t
+                sn0 = sn0 + n0
+                sn1 = sn1 + n1
+                sn2 = sn2 + n2
+                sn3 = sn3 + n3
+            # target_class = torch.argmax(labels, dim=1)
+            cat_stft, labels = Variable(cat_stft.type(torch.FloatTensor).to(device)), Variable(labels.to(device))
+
+            outputs = model(cat_stft)
+            labels = labels.type_as(outputs)
+            loss = criterion(outputs, labels)
+            losses.update(loss.data, labels.size(0))
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            batch_end_t = time.time()
+
+        train_t = batch_end_t - epoch_start_t
+
+        if args.mixup == True:
+            logger.info("Normal {}  | Crackle {} | Wheeze {} | Both {}".format(sn0, sn1, sn2, sn3))
+        print(sn0, sn1, sn2, sn3)
+        print('Loading dataset time:', load_t)
+        print('Data augmentation time:', mix_t)
+        print('Training time per epoch:', train_t)
+        scheduler.step()
+        #################################test##########################################
+        eval_start_t = time.time()
+        model.eval()
+        if args.binary:
+            train_acc, train_Se, train_Sq, train_Score, _, train_confm = accuracy_binary(model, train_eval_loader,
+                                                                                         criterion, device)
+            test_acc, test_Se, test_Sq, test_Score, test_loss, test_confm = accuracy_binary(model, test_loader, criterion, device)
+        else:
+            train_acc, train_Se, train_Sq, train_Score, _, train_confm = accuracy(model, train_eval_loader, criterion)
+            test_acc, test_Se, test_Sq, test_Score, test_loss, test_confm = accuracy(model, test_loader, criterion)
+        # scheduler.step()
+        eval_end_t = time.time()
+        eval_time = eval_end_t - eval_start_t
+        print('Evaluation time:', eval_end_t - eval_start_t)
+        ###############################################################################
+        print("Learning rate", scheduler.get_last_lr())
+        ###############################################################################
+        with open(saved_dir + "/result.csv", 'a+') as f:
+            csv_write = csv.writer(f)
+            # data_row = [epoch, prec_t, rec_t, f1_t, suc_t]
+            data_row = [epoch, scheduler.get_last_lr(), losses.avg.item(), train_acc, train_Se, train_Sq, train_Score,
+                        test_loss, test_acc, test_Se, test_Sq, test_Score, train_t, eval_time, amount_prunned, amount_regrown]
+            csv_write.writerow(data_row)
+        logger.info(
+            "Epoch {:04d}  |  "
+            "Train Loss {:.4f} |Train Acc {:.4f} |  train Se {:.4f} | train Sq {:.4f} | train Score {:.4f} | Test Loss {:.4f} |Test Acc {:.4f} | test Se {:.4f} | test Sq {:.4f} | test Score {:.4f}".format(
+                epoch, losses.avg.item(), train_acc, train_Se, train_Sq, train_Score, test_loss, test_acc, test_Se,
+                test_Sq, test_Score
+            )
+        )
+
+        if test_Score > best_val_score and test_Score != 0.5:
+            best_val_score = test_Score
+            logger.info(test_confm)
+            print('Saving best model parameters with Val F1 score = %.4f' % (best_val_score))
+            if args.quantization:
+                model_converted = torch.quantization.convert(model, inplace=True)
+                torch.save(model_converted.state_dict(), saved_dir + '/saved_model_quantized_params')
+            else:
+                torch.save(model.state_dict(), saved_dir + '/saved_model_params')
+
+        # prune model
+        if args.use_pruning:
+            prunned_connections = 0
+            connections_available_for_pruning = 0
+            for name, module in model.named_modules():
+                if isinstance(module, torch.nn.Conv2d):
+                    prune.ln_structured(module, name="weight", amount=args.prunning_amount, n=2, dim=0)
+                    weights_num = torch.numel(module.weight_mask)
+                    connections_available_for_pruning += weights_num
+                    prunned_connections += (weights_num - torch.count_nonzero(module.weight_mask))
+                if isinstance(module, torch.nn.Linear):
+                    prune.l1_unstructured(module, name="weight", amount=0.4)
+                    weights_num = torch.numel(module.weight_mask)
+                    connections_available_for_pruning += weights_num
+                    prunned_connections += (weights_num - torch.count_nonzero(module.weight_mask))
+            amount_prunned = 100* (prunned_connections/connections_available_for_pruning)
+            print("Pruned {} out of {} connections. {} % connections were prunned".format(prunned_connections,
+                                                                                          connections_available_for_pruning,
+                                                                                          amount_prunned))
+
+        if (args.rigl and epoch % args.rigl_deltaT == 0 and epoch != 0 and epoch < args.rigl_t_end):
+            prunned_connections = 0
+            connections_available_for_pruning = 0
+            for name, module in model.named_modules() or isinstance(module, torch.nn.Linear):
+                if isinstance(module, torch.nn.Conv2d):
+                    prune.l1_unstructured(module, name="weight", amount=fdecay*(1-args.rigl_sparsity))
+                    weights_num = torch.numel(module.weight_mask)
+                    connections_available_for_pruning += weights_num
+                    prunned_connections += (weights_num - torch.count_nonzero(module.weight_mask))
+            amount_prunned = 100 * (prunned_connections / connections_available_for_pruning)
+            print("Pruned {} out of {} connections. {} % connections were prunned".format(prunned_connections,
+                                                                                          connections_available_for_pruning,
+                                                                                          amount_prunned))
+
 if __name__ == '__main__':
     # os.system('nvidia-smi -q -d Memory |grep -A4 GPU|grep Free >tmp')
     # memory_gpu = np.array([int(x.split()[2]) for x in open('tmp', 'r').readlines()])
@@ -662,14 +1107,15 @@ if __name__ == '__main__':
     start_t = time.time()
     saved_dir = args.save + 'mix_' if args.mixup else args.save + 'nomix_'
     saved_dir = saved_dir + str(args.size) +'bs' + str(args.batch_size) + 'lr' + str(args.lr) + 'dp' + str(args.dropout0) + str(args.dropout1) + str(args.dropout2)+ \
-                'dk'+str(args.dk)+'dv'+str(args.dv)+'nh'+str(args.nh)+'ep' + str(args.nepochs) +'wd' + str(args.weight_decay)
+                'dk'+str(args.dk)+'dv'+str(args.dv)+'nh'+str(args.nh)+'ep' + str(args.nepochs) +'wd' + str(args.weight_decay) + 'prun' + str(args.use_pruning) + \
+                'prun_am'+ str(args.prunning_amount) + 'rg' + str(args.use_regrowth) + 'rg_am' + str(args.regrowth_amount) + 'rg_dec' + str(args.regrowth_decay)
     makedirs(saved_dir)
     logger = get_logger(logpath=os.path.join(saved_dir, 'logs'), filepath=os.path.abspath(__file__))
     logger.info(args)
-
-
-
+    # select device
     use_cuda = True
+    device = torch.device("cuda:0" if use_cuda else "cpu")
+
     batch_size = args.batch_size
     if args.binary:
         net = LungAttnBinary()
@@ -682,7 +1128,16 @@ if __name__ == '__main__':
         net = LungAttn()
     if not args.use_pretrained:
         _weights_init(net)
-    device = torch.device("cuda:0" if use_cuda else "cpu")
+
+    if args.distillation:
+        net.load_state_dict(torch.load(args.distillation_teacher_path))
+        teacher = net
+        student = StudentLungAttnBinary()
+        teacher.to(device)
+        student.to(device)
+
+
+
     net.to(device)
     if use_cuda:
         # data parallel
@@ -691,6 +1146,18 @@ if __name__ == '__main__':
         # net = torch.nn.DataParallel(net, device_ids=list(range(args.gpu)))
         print('Using', torch.cuda.device_count(), 'GPUs.')
         print(torch.cuda.get_device_name(0))
+
+
+    # ### Quantization
+    # quantized_model = QuantizedLungAttnBinary(net)
+    # # setting default config for x86 server
+    # qconfig = torch.ao.quantization.get_default_qat_qconfig('x86')
+    # torch.backends.quantized.engine = 'x86'
+    # # set model config
+    # quantized_model.qconfig = qconfig
+    # # prepare quantized model
+    # torch.quantization.prepare_qat(quantized_model, inplace=True)
+    
 
     logger.info(net)
     logger.info('Number of parameters: {}'.format(count_parameters(net)))
@@ -703,113 +1170,19 @@ if __name__ == '__main__':
         criterion = nn.BCELoss()
     else:
         criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
-    if args.optimizer == 'adam':
-        optimizer = torch.optim.Adam(net.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    if not args.distillation:
+        if args.optimizer == 'adam':
+            optimizer = torch.optim.Adam(net.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+        else:
+            optimizer = torch.optim.SGD(net.parameters(), lr=args.lr, momentum=0.9, weight_decay=args.weight_decay)
     else:
-        optimizer = torch.optim.SGD(net.parameters(), lr=args.lr, momentum=0.9, weight_decay=args.weight_decay)
+        optimizer = torch.optim.Adam(student.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=args.step, gamma=0.1, verbose=True)
     # milestones = [50,70,90,100]
     # scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones, gamma=0.1, last_epoch=-1)
     # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, args.nepochs, eta_min=0, last_epoch=-1)
     train_loader, train_eval_loader, test_loader = get_mnist_loaders(batch_size, args.test_bs, args.workers, binary=args.binary)
-
-    prepare_t = time.time()
-    print('The preparation time:', prepare_t - start_t)
-    best_val_score = 0
-    with open(saved_dir + "/result.csv", 'w') as f:
-        csv_write = csv.writer(f)
-        csv_head = ['epoch', 'lr', 'train_loss', 'train_acc','train_se', 'train_sq','train_score','test_loss', 'test_acc', 'test_se','test_sq', 'test_score', 'epoch_training_time', 'evaluation_time']
-        csv_write.writerow(csv_head)
-
-    for epoch in tqdm(range(args.nepochs)):
-
-        ## REGROW CONNECTIONS
-        if epoch > 0 and args.use_regrowth:
-            for _, module in net.named_modules():
-                if isinstance(module, torch.nn.Conv2d):
-                    regrowth_unstructured(module, name='weight', regrowth_method='magnitude', amount=0.5)
-
-
-        losses = AverageMeter()
-        epoch_start_t = time.time()
-        batch_end_t = time.time()
-        ################################train##########################################
-        net.train()
-        temp = 0
-        sn0,sn1,sn2,sn3 = 0,0,0,0
-        load_t, mix_t = 0, 0
-        # adjust_learning_rate(optimizer, epoch)
-        for batch_idx, (cat_stft, labels) in enumerate(train_loader):
-            batch_t = time.time()
-            load_t += batch_t - batch_end_t
-
-            if args.mixup:
-                n0, n1, n2, n3, cat_stft, labels = mixup_data(cat_stft, labels, args.alpha)
-                mix_end_t = time.time()
-                mix_t += mix_end_t - batch_t
-                sn0 = sn0+n0
-                sn1 = sn1+n1
-                sn2 = sn2+n2
-                sn3 = sn3+n3
-            # target_class = torch.argmax(labels, dim=1)
-            cat_stft, labels = Variable(cat_stft.type(torch.FloatTensor).to(device)), Variable(labels.to(device))
-
-            outputs = net(cat_stft)
-            labels = labels.type_as(outputs)
-            loss = criterion(outputs, labels)
-            losses.update(loss.data, labels.size(0))
-
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            batch_end_t = time.time()
-
-        train_t = batch_end_t - epoch_start_t
-
-
-        if args.mixup == True:
-            logger.info("Normal {}  | Crackle {} | Wheeze {} | Both {}".format(sn0,sn1,sn2,sn3))
-        print(sn0,sn1,sn2,sn3)
-        print('Loading dataset time:', load_t)
-        print('Data augmentation time:', mix_t)
-        print('Training time per epoch:', train_t)
-        scheduler.step()
-        #################################test##########################################
-        eval_start_t = time.time()
-        net.eval()
-        if args.binary:
-            train_acc, train_Se, train_Sq, train_Score, _, train_confm = accuracy_binary(net, train_eval_loader, criterion)
-            test_acc, test_Se, test_Sq, test_Score, test_loss, test_confm = accuracy_binary(net, test_loader,criterion)
-        else:
-            train_acc, train_Se, train_Sq, train_Score, _, train_confm = accuracy(net, train_eval_loader, criterion)
-            test_acc, test_Se, test_Sq, test_Score, test_loss, test_confm = accuracy(net, test_loader,criterion)
-        # scheduler.step()
-        eval_end_t = time.time()
-        eval_time = eval_end_t - eval_start_t
-        print('Evaluation time:', eval_end_t - eval_start_t)
-        ###############################################################################
-        print("Learning rate", scheduler.get_last_lr())
-        ###############################################################################
-        with open (saved_dir + "/result.csv",'a+') as f:
-            csv_write = csv.writer(f)
-            # data_row = [epoch, prec_t, rec_t, f1_t, suc_t]
-            data_row = [epoch, scheduler.get_last_lr(), losses.avg.item(), train_acc, train_Se, train_Sq, train_Score, test_loss, test_acc, test_Se, test_Sq, test_Score, train_t, eval_time]
-            csv_write.writerow(data_row)
-        logger.info(
-            "Epoch {:04d}  |  "
-            "Train Loss {:.4f} |Train Acc {:.4f} |  train Se {:.4f} | train Sq {:.4f} | train Score {:.4f} | Test Loss {:.4f} |Test Acc {:.4f} | test Se {:.4f} | test Sq {:.4f} | test Score {:.4f}".format(
-                epoch, losses.avg.item(), train_acc, train_Se, train_Sq, train_Score, test_loss, test_acc, test_Se, test_Sq, test_Score
-            )
-        )
-
-        if test_Score > best_val_score and test_Score!=0.5:
-            best_val_score = test_Score
-            logger.info(test_confm)
-            print('Saving best model parameters with Val F1 score = %.4f' % (best_val_score))
-            torch.save(net.state_dict(), saved_dir + '/saved_model_params')
-
-        # prune model
-        if args.use_pruning:
-            for name, module in net.named_modules():
-                if isinstance(module, torch.nn.Conv2d):
-                    prune.ln_structured(module, name="weight", amount=0.8, n=2, dim=0)
+    if args.distillation:
+        train_knowledge_distillation(teacher, student, train_loader, test_loader)
+    else:
+        train_model(net, train_loader, test_loader)
