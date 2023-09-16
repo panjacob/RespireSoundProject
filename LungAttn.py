@@ -59,7 +59,7 @@ parser.add_argument('--rigl_t_end', type=int, default=60)
 parser.add_argument('--rigl_alpha', type=int, default=0.3)
 parser.add_argument('--rigl_sparsity', type=float, default=0.8)
 parser.add_argument('--distillation', type=bool, default=False)
-parser.add_argument('--distillation_teacher_path', type=str, default="./log/pruned/model_rigled0.0/saved_model_params")
+parser.add_argument('--distillation_teacher_path', type=str, default="./log/models_rigl/model_rigl/saved_model_params")
 parser.add_argument('--distillation_weight', type=float, default=0.4)
 parser.add_argument('--input', '-i',
                     default="./pack/official/tqwt1_4_train.p", type=str,
