@@ -15,7 +15,7 @@ parser.add_argument('--input', '-i',
                     help='path to directory with input data archives')
 parser.add_argument('--test', default="./pack/binary/tqwt1_4_test.p",
                     type=str, help='path to directory with test data archives')
-parser.add_argument('--prunning_amount', default=0.0,
+parser.add_argument('--prunning_amount', default=0.8,
                     type=int)
 args = parser.parse_args()
 
@@ -55,8 +55,8 @@ def get_mnist_loaders(batch_size=128, test_batch_size = 500, workers = 4, perc=1
     return train_loader, train_eval_loader, test_loader
 
 if __name__ == "__main__":
-    model_path = "./log/details/rigl_alpha_03_sparsity_08_delta_t_5_t_end_50/saved_model_params"
-    save_dir = "./log/pruned/model_rigled" + str(args.prunning_amount)
+    model_path = "./log/details/pruned_model_am0.3_rg_am0.8rg_dec0.98/saved_model_params"
+    save_dir = "./log/pruned/model_pruned" + str(args.prunning_amount)
     makedirs(save_dir)
     model = LungAttnBinary()
     for name, module in model.named_modules():

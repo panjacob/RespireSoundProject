@@ -57,7 +57,7 @@ parser.add_argument('--rigl', type=bool, default=False)
 parser.add_argument('--rigl_deltaT', type=int, default=5)
 parser.add_argument('--rigl_t_end', type=int, default=60)
 parser.add_argument('--rigl_alpha', type=int, default=0.3)
-parser.add_argument('--rigl_sparsity', type=float, default=0.0)
+parser.add_argument('--rigl_sparsity', type=float, default=0.8)
 parser.add_argument('--distillation', type=bool, default=False)
 parser.add_argument('--distillation_teacher_path', type=str, default="./log/pruned/model_rigled0.0/saved_model_params")
 parser.add_argument('--distillation_weight', type=float, default=0.4)
@@ -429,25 +429,25 @@ class StudentLungAttnBinary(nn.Module):
     def __init__(self):
         super(StudentLungAttnBinary, self).__init__()
         self.conv1 = nn.Sequential(
-            nn.Conv2d(3, 64, 7, 2, 3, bias=True),
-            norm(64),
+            nn.Conv2d(3, 32, 7, 2, 3, bias=True),
+            norm(32),
             nn.ReLU(inplace=True),
             nn.MaxPool2d(3, 2, 1)
         )
-        self.ResNet_0_0 = ResBlock(64, 64, stride=2, downsample=conv1x1(64, 64, 2))
-        self.ResNet_0_1 = ResBlock(64, 64, stride=2, downsample=conv1x1(64, 64, 2))
-        self.ResNet_0 = ResBlock(64, 64)
-        self.ResNet_1 = ResBlock(64, 64)
-        self.ResNet_2 = ResBlock(64, 64)
-        self.ResNet_3 = ResBlock(64, 64)
-        self.ResNet_4 = ResBlock(64, 64)
-        self.ResNet_5 = ResBlock(64, 64, use_att=True, relatt=True, shape=args.shape)
-        self.ResNet_6 = ResBlock(64, 64)
-        self.norm0 = norm(64)
+        self.ResNet_0_0 = ResBlock(32, 32, stride=2, downsample=conv1x1(32, 32, 2))
+        self.ResNet_0_1 = ResBlock(32, 32, stride=2, downsample=conv1x1(32, 32, 2))
+        self.ResNet_0 = ResBlock(32, 32)
+        self.ResNet_1 = ResBlock(32, 32)
+        self.ResNet_2 = ResBlock(32, 32)
+        self.ResNet_3 = ResBlock(32, 32)
+        self.ResNet_4 = ResBlock(32, 32)
+        self.ResNet_5 = ResBlock(32, 32, use_att=True, relatt=True, shape=args.shape)
+        self.ResNet_6 = ResBlock(32, 32)
+        self.norm0 = norm(32)
         self.relu0 = nn.ReLU(inplace=True)
         self.pool0 = nn.AdaptiveAvgPool2d((1, 1))
-        self.linear1 = nn.Linear(64, 64)
-        self.linear2 = nn.Linear(64, 1)
+        self.linear1 = nn.Linear(32, 32)
+        self.linear2 = nn.Linear(32, 1)
         self.dropout1 = nn.Dropout(args.dropout1)
         self.dropout2 = nn.Dropout(args.dropout2)
         self.flat = Flatten()
@@ -458,12 +458,12 @@ class StudentLungAttnBinary(nn.Module):
                 self.conv1,
                 self.ResNet_0_0,
                 self.ResNet_0_1,
-                # self.ResNet_0,
-                # self.ResNet_1,
-                # self.ResNet_2,
-                # self.ResNet_3,
-                # self.ResNet_4,
-                # self.ResNet_5,
+                self.ResNet_0,
+                self.ResNet_1,
+                self.ResNet_2,
+                self.ResNet_3,
+                self.ResNet_4,
+                self.ResNet_5,
                 self.ResNet_6
             ]
         else:
@@ -485,11 +485,6 @@ class StudentLungAttnBinary(nn.Module):
         x = self.conv1(x)
         x = self.ResNet_0_0(x)
         x = self.ResNet_0_1(x)
-        x = self.ResNet_0(x)
-        x = self.ResNet_1(x)
-        x = self.ResNet_2(x)
-        x = self.ResNet_3(x)
-        x = self.ResNet_4(x)
         x = self.ResNet_5(x)
         x = self.ResNet_6(x)
         x = self.norm0(x)
@@ -810,7 +805,6 @@ def train_knowledge_distillation(teacher, student, train_loader, test_loader):
 
     # set modes
     teacher.eval()
-    student.train()
 
     for epoch in tqdm(range(args.nepochs)):
         losses = AverageMeter()
@@ -1157,10 +1151,14 @@ if __name__ == '__main__':
     # quantized_model.qconfig = qconfig
     # # prepare quantized model
     # torch.quantization.prepare_qat(quantized_model, inplace=True)
-    
 
-    logger.info(net)
-    logger.info('Number of parameters: {}'.format(count_parameters(net)))
+
+    if args.distillation:
+        logger.info(student)
+        logger.info('Number of parameters: {}'.format(count_parameters(student)))
+    else:
+        logger.info(net)
+        logger.info('Number of parameters: {}'.format(count_parameters(net)))
 
     if args.mixup == False:
         pos_weight = torch.tensor([2,3,9,10]).to(device)
@@ -1176,7 +1174,10 @@ if __name__ == '__main__':
         else:
             optimizer = torch.optim.SGD(net.parameters(), lr=args.lr, momentum=0.9, weight_decay=args.weight_decay)
     else:
-        optimizer = torch.optim.Adam(student.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+        if args.optimizer == 'adam':
+            optimizer = torch.optim.Adam(student.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+        else:
+            optimizer = torch.optim.SGD(student.parameters(), lr=args.lr, momentum=0.9, weight_decay=args.weight_decay)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=args.step, gamma=0.1, verbose=True)
     # milestones = [50,70,90,100]
     # scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones, gamma=0.1, last_epoch=-1)

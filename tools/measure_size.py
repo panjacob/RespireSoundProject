@@ -22,7 +22,7 @@ class ModelCharacteristic:
         print('model size: {:.3f}MB'.format(size_mb))
 
     def parameters_num(self):
-        self.params_num = sum(param.numel() for param in model.parameters())
+        self.params_num = sum(param.numel() for param in self.model.parameters())
         print("model parameters num: {}".format(self.params_num))
     def measure_inference_time_gpu(self):
         # source: https://deci.ai/blog/measure-inference-time-deep-neural-networks/
@@ -56,6 +56,8 @@ class ModelCharacteristic:
     def measure_inference_time_cpu(self):
         model = deepcopy(self.model)
         input_size = self.get_input_size()
+        device = torch.device("cpu")
+        model.to(device)
         model.eval()
         dummy_input = torch.randn(1, input_size[0], input_size[1], input_size[2], dtype=torch.float)
         data = next(iter(self.dataloader))[0]
