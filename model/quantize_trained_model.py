@@ -1,5 +1,5 @@
 import torch.quantization
-from LungAttn import LungAttnBinary, QuantizedLungAttnBinary, accuracy_binary, one_hot, myDataset, makedirs
+from LungAttn import LungAttnBinary, QuantizedLungAttnBinary, one_hot, myDataset, makedirs
 from torch.utils.data import DataLoader
 import torch.nn.utils.prune as prune
 import numpy as np

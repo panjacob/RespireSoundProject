@@ -1,6 +1,6 @@
 import torch
-from model.LungAttn import LungAttn
-from model.LungAttn import get_mnist_loaders
+from LungAttn import LungAttn
+from LungAttn import get_mnist_loaders
 from copy import deepcopy
 import numpy as np
 import time

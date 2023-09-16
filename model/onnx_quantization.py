@@ -1,5 +1,4 @@
-from LungAttn import LungAttnBinary, accuracy_binary, one_hot, myDataset, makedirs
-import torch.nn.utils.prune as prune
+from LungAttn import LungAttnBinary, one_hot, myDataset, makedirs
 import torch
 import torch.nn as nn
 import argparse

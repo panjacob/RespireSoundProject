@@ -1,6 +1,5 @@
-from LungAttn import LungAttnBinary, StudentLungAttnBinary, accuracy_binary, one_hot, myDataset, makedirs
+from LungAttn import LungAttnBinary, accuracy_binary, one_hot, myDataset
 from tools.measure_size import ModelCharacteristic
-import torch.nn.utils.prune as prune
 import torch
 import torch.nn as nn
 import argparse
